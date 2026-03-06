@@ -1,0 +1,254 @@
+# =====================================
+# JSON Refiner Advanced Edition
+# =====================================
+
+import json
+import json5
+import re
+import gradio as gr
+from enum import Enum
+from jsonschema import validate, ValidationError
+
+# =====================================
+# Case Style Enum
+# =====================================
+
+class CaseStyle(Enum):
+    SNAKE_CASE = "snake_case"
+    CAMEL_CASE = "camelCase"
+    KEBAB_CASE = "kebab-case"
+    PASCAL_CASE = "PascalCase"
+
+# =====================================
+# Core Engine
+# =====================================
+
+class JSONRefinerCore:
+    def __init__(self):
+        self.history = []
+
+    # -------------------------
+    # Type Inference
+    # -------------------------
+    def infer_type(self, value):
+        value = value.strip()
+
+        if value.lower() in ["true", "yes", "on", "1"]:
+            return True
+        if value.lower() in ["false", "no", "off", "0"]:
+            return False
+        if value.lower() in ["null", "none", "nil", "undefined", "n/a"]:
+            return None
+
+        if re.fullmatch(r"-?\d+", value):
+            return int(value)
+
+        if re.fullmatch(r"-?\d+\.\d+", value):
+            return float(value)
+
+        try:
+            return json5.loads(value)
+        except:
+            return value
+
+    # -------------------------
+    # Case Conversion
+    # -------------------------
+    def split_words(self, text):
+        text = re.sub(r'[^a-zA-Z0-9]', ' ', text)
+        return text.strip().split()
+
+    def to_snake_case(self, text):
+        return "_".join(w.lower() for w in self.split_words(text))
+
+    def to_camel_case(self, text):
+        words = self.split_words(text)
+        if not words:
+            return text
+        return words[0].lower() + "".join(w.capitalize() for w in words[1:])
+
+    def to_kebab_case(self, text):
+        return "-".join(w.lower() for w in self.split_words(text))
+
+    def to_pascal_case(self, text):
+        return "".join(w.capitalize() for w in self.split_words(text))
+
+    def normalize_key(self, key, style):
+        if style == CaseStyle.SNAKE_CASE:
+            return self.to_snake_case(key)
+        if style == CaseStyle.CAMEL_CASE:
+            return self.to_camel_case(key)
+        if style == CaseStyle.KEBAB_CASE:
+            return self.to_kebab_case(key)
+        if style == CaseStyle.PASCAL_CASE:
+            return self.to_pascal_case(key)
+        return key
+
+    # -------------------------
+    # Parse Key-Value Text
+    # -------------------------
+    def parse_text(self, text, style):
+        result = {}
+        lines = text.strip().split("\n")
+
+        for line in lines:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                key = self.normalize_key(key.strip(), style)
+                value = self.infer_type(value.strip())
+                result[key] = value
+
+        self.history.append(result)
+        return result
+
+    # -------------------------
+    # Remove Nulls
+    # -------------------------
+    def remove_nulls(self, data):
+        if isinstance(data, dict):
+            return {k: self.remove_nulls(v) for k, v in data.items() if v is not None}
+        return data
+
+    # -------------------------
+    # Flatten
+    # -------------------------
+    def flatten(self, data, parent_key="", sep="."):
+        items = {}
+        for k, v in data.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if isinstance(v, dict):
+                items.update(self.flatten(v, new_key, sep))
+            else:
+                items[new_key] = v
+        return items
+
+    # -------------------------
+    # Unflatten
+    # -------------------------
+    def unflatten(self, data, sep="."):
+        result = {}
+        for key, value in data.items():
+            parts = key.split(sep)
+            d = result
+            for part in parts[:-1]:
+                d = d.setdefault(part, {})
+            d[parts[-1]] = value
+        return result
+
+    # -------------------------
+    # Merge
+    # -------------------------
+    def merge(self, *json_objects):
+        result = {}
+        for obj in json_objects:
+            if obj:
+                result.update(obj)
+        return result
+
+    # -------------------------
+    # Schema Validation
+    # -------------------------
+    def validate_schema(self, json_data, schema_text):
+        try:
+            schema = json.loads(schema_text)
+            validate(instance=json_data, schema=schema)
+            return "✅ Validation Successful"
+        except ValidationError as e:
+            return f"❌ Validation Error:\n{str(e)}"
+        except:
+            return "❌ Invalid Schema Format"
+
+
+# =====================================
+# Create Core Object
+# =====================================
+
+core = JSONRefinerCore()
+
+# =====================================
+# UI Functions
+# =====================================
+
+def refine(text, case_style, remove_nulls, flatten):
+    style = CaseStyle(case_style)
+    data = core.parse_text(text, style)
+
+    if remove_nulls:
+        data = core.remove_nulls(data)
+
+    if flatten:
+        data = core.flatten(data)
+
+    return json.dumps(data, indent=4)
+
+def merge_json(j1, j2, j3):
+    try:
+        obj1 = json.loads(j1) if j1 else {}
+        obj2 = json.loads(j2) if j2 else {}
+        obj3 = json.loads(j3) if j3 else {}
+        return json.dumps(core.merge(obj1, obj2, obj3), indent=4)
+    except:
+        return "❌ Invalid JSON"
+
+def flatten_unflatten(json_text, mode):
+    try:
+        data = json.loads(json_text)
+        if mode == "Flatten":
+            return json.dumps(core.flatten(data), indent=4)
+        else:
+            return json.dumps(core.unflatten(data), indent=4)
+    except:
+        return "❌ Invalid JSON"
+
+def validate_json(json_text, schema_text):
+    try:
+        data = json.loads(json_text)
+        return core.validate_schema(data, schema_text)
+    except:
+        return "❌ Invalid JSON"
+
+
+# =====================================
+# Build Gradio UI
+# =====================================
+
+with gr.Blocks() as demo:
+
+    gr.Markdown("# 🚀 JSON Refiner Advanced")
+
+    with gr.Tab("Core Refining"):
+        input_text = gr.Textbox(lines=10, label="Key-Value Input")
+        case_option = gr.Radio(
+            choices=[style.value for style in CaseStyle],
+            value=CaseStyle.SNAKE_CASE.value,
+            label="Case Style"
+        )
+        remove_nulls = gr.Checkbox(label="Remove Null Values")
+        flatten_option = gr.Checkbox(label="Flatten JSON")
+        output_json = gr.Code(language="json", label="Output")
+        gr.Button("Refine").click(
+            refine,
+            inputs=[input_text, case_option, remove_nulls, flatten_option],
+            outputs=output_json
+        )
+
+    with gr.Tab("Merge JSON"):
+        j1 = gr.Code(language="json", label="JSON 1")
+        j2 = gr.Code(language="json", label="JSON 2")
+        j3 = gr.Code(language="json", label="JSON 3")
+        merge_output = gr.Code(language="json", label="Merged Output")
+        gr.Button("Merge").click(merge_json, inputs=[j1, j2, j3], outputs=merge_output)
+
+    with gr.Tab("Flatten / Unflatten"):
+        json_input = gr.Code(language="json", label="Input JSON")
+        mode = gr.Radio(["Flatten", "Unflatten"], value="Flatten")
+        result = gr.Code(language="json", label="Result")
+        gr.Button("Transform").click(flatten_unflatten, inputs=[json_input, mode], outputs=result)
+
+    with gr.Tab("Validation"):
+        json_val = gr.Code(language="json", label="JSON Data")
+        schema_val = gr.Code(language="json", label="JSON Schema")
+        val_output = gr.Textbox(label="Validation Result")
+        gr.Button("Validate").click(validate_json, inputs=[json_val, schema_val], outputs=val_output)
+
+demo.launch()
